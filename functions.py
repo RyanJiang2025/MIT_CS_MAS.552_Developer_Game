@@ -60,110 +60,158 @@ def FAR_bonus_menu():
     
     return amenity_menu_copy
 
-def amenity_select_sidebar():
+def _calculate_far_bonus(amenity_counts_dict):
+    """Calculate the total FAR bonus from a dict of {amenity_name: count}.
+    Uses the same diminishing-returns scaling as the sidebar selection."""
+    total = 0
+    for name, count in amenity_counts_dict.items():
+        if count == 0:
+            continue
+        rows = d.amenity_menu[d.amenity_menu["Amenity"] == name]
+        if rows.empty:
+            continue
+        per_unit_bonus = rows.iloc[0]["FAR Bonus"]
+        scaled_count = count if count <= 1 else np.log(count) + 1
+        total += scaled_count * per_unit_bonus
+    return total
+
+
+def _marginal_far_bonus(amenity_name, current_count, per_unit_bonus):
+    """FAR bonus from adding one more unit given current_count (diminishing returns)."""
+    if current_count <= 0:
+        scaled_current = 0
+    elif current_count <= 1:
+        scaled_current = current_count
+    else:
+        scaled_current = np.log(current_count) + 1
+    next_count = current_count + 1
+    scaled_next = next_count if next_count <= 1 else np.log(next_count) + 1
+    return (scaled_next - scaled_current) * per_unit_bonus
+
+
+def amenity_select_sidebar(is_round2=False):
+    """Amenity selection sidebar. When is_round2=True, selection starts at 0 (independent per cycle)
+    but FAR bonus uses cumulative counts for diminishing returns across cycles."""
     st.sidebar.title("Amenity Selection")
     st.sidebar.write("Select how many of each amenity you want to fund.")
     
-    # Initialize session_state for committed amenity counts (these become the minimum on next page)
+    # Initialize session_state for committed amenity counts (round 1 results; used for FAR diminishing returns)
     if "amenity_counts_committed" not in st.session_state:
         st.session_state.amenity_counts_committed = {
             row["Amenity"]: 0 for _, row in d.amenity_menu.iterrows()
         }
     
-    # Use plain number_input (no form) so changes trigger reruns immediately
+    committed = st.session_state.amenity_counts_committed
     land_plot_size = d.input_factors["Land_plot_size"]
-    
-    # First, calculate total setback sqft already committed by OTHER setback amenities
-    # so we can cap each setback amenity's max to not exceed the land plot
     setback_amenities = d.amenity_menu[d.amenity_menu["Land Use"] == "Setback"]
+    
+    if is_round2:
+        # Show diminishing FAR benefits table: Round 1 count and marginal FAR (+1) per amenity
+        marginal_rows = []
+        for _, row in d.amenity_menu.iterrows():
+            name = row["Amenity"]
+            per_unit = row["FAR Bonus"]
+            r1_count = committed.get(name, 0)
+            marginal = _marginal_far_bonus(name, r1_count, per_unit)
+            marginal_rows.append({
+                "Amenity": name,
+                "Round 1": r1_count,
+                "Marginal FAR (+1)": round(marginal, 4),
+            })
+        marginal_df = pd.DataFrame(marginal_rows)
+        st.sidebar.caption("Diminishing returns: FAR bonus per additional unit (given Round 1 choices)")
+        st.sidebar.dataframe(marginal_df, use_container_width=True, hide_index=True)
+        st.sidebar.divider()
     
     amenity_counts = {}
     for _, row in d.amenity_menu.iterrows():
         name = row["Amenity"]
-        # Minimum = committed count from previous page (can't undo past commitments)
-        committed_value = st.session_state.amenity_counts_committed.get(name, 0)
+        per_unit_bonus = row["FAR Bonus"]
+        
+        if is_round2:
+            # Round 2: selection starts at 0, independent of round 1
+            min_val = 0
+            default_val = 0
+            widget_key = f"amenity_round2_{name}"
+            r1_count = committed.get(name, 0)
+            marginal = _marginal_far_bonus(name, r1_count, per_unit_bonus)
+            label = f"{name} (Round 1: {r1_count}, Marginal FAR: {round(marginal, 3)})"
+        else:
+            # Round 1: selection starts at 0 (committed is 0)
+            min_val = committed.get(name, 0)
+            default_val = min_val
+            widget_key = f"amenity_{name}"
+            label = f"{name} (FAR Bonus: {round(per_unit_bonus, 2)})"
         
         if row["Land Use"] == "Setback" and row["Square Footage"] > 0:
-            # Calculate sqft used by all OTHER setback amenities (already selected)
+            # Other setback sqft = committed + current round selection (cumulative for space)
             other_setback_sqft = sum(
-                amenity_counts.get(other_name, st.session_state.amenity_counts_committed.get(other_name, 0))
+                (committed.get(other_name, 0) + amenity_counts.get(other_name, 0))
                 * d.amenity_menu[d.amenity_menu["Amenity"] == other_name].iloc[0]["Square Footage"]
                 for other_name in setback_amenities["Amenity"] if other_name != name
             )
-            # Remaining space available for this amenity
             remaining_space = land_plot_size - other_setback_sqft
-            # Max count = how many of this amenity can fit in remaining space
-            max_count = max(committed_value, int(remaining_space // row["Square Footage"]))
+            max_count = max(min_val, int(remaining_space // row["Square Footage"]))
         else:
             max_count = 10
         
         count = st.sidebar.number_input(
-            f"{name} (FAR Bonus: {round(row['FAR Bonus'], 2)})",
-            min_value=committed_value, max_value=max_count, value=committed_value, step=1, key=f"amenity_{name}"
+            label,
+            min_value=min_val, max_value=max_count, value=default_val, step=1, key=widget_key
         )
         amenity_counts[name] = count
 
-    # Calculate FAR bonus for each amenity type individually
-    # Scaling applies to the count: linear up to 1, ln(count)+1 for count > 1
-    total_FAR_Bonus = 0
-    for name in amenity_counts:
-        count = amenity_counts[name]
-        if count == 0:
-            continue
-        
-        per_unit_bonus = d.amenity_menu[d.amenity_menu["Amenity"] == name].iloc[0]["FAR Bonus"]
-        
-        # Apply diminishing returns to the count, not the bonus
-        if count <= 1:
-            scaled_count = count  # Linear scaling
-        else:
-            scaled_count = np.log(count) + 1  # Logarithmic scaling for count > 1
-        
-        total_FAR_Bonus += scaled_count * per_unit_bonus
-
-    st.sidebar.write("Total FAR Bonus:", round(total_FAR_Bonus, 2))
-
-    # Build selected_amenities: list of amenity names that have count > 0
-    selected_amenities = [name for name, count in amenity_counts.items() if count > 0]
-
-    return total_FAR_Bonus, selected_amenities, amenity_counts
+    if is_round2:
+        # Round 2: amenity_counts = this cycle only. FAR uses cumulative for diminishing returns.
+        counts_this_round = amenity_counts.copy()
+        counts_cumulative = {n: committed.get(n, 0) + counts_this_round.get(n, 0) for n in amenity_counts}
+        total_FAR_Bonus = _calculate_far_bonus(counts_cumulative)
+        committed_FAR_Bonus = _calculate_far_bonus(committed)
+        incremental_FAR_Bonus = total_FAR_Bonus - committed_FAR_Bonus
+        selected_this_round = [n for n, c in counts_this_round.items() if c > 0]
+        selected_cumulative = [n for n, c in counts_cumulative.items() if c > 0]
+        st.sidebar.write("Round FAR Bonus:", round(incremental_FAR_Bonus, 2))
+        return total_FAR_Bonus, incremental_FAR_Bonus, selected_this_round, counts_this_round, selected_cumulative, counts_cumulative
+    else:
+        # Round 1: incremental == total (committed is 0)
+        total_FAR_Bonus = _calculate_far_bonus(amenity_counts)
+        incremental_FAR_Bonus = total_FAR_Bonus
+        selected_amenities = [n for n, c in amenity_counts.items() if c > 0]
+        st.sidebar.write("Round FAR Bonus:", round(incremental_FAR_Bonus, 2))
+        return total_FAR_Bonus, incremental_FAR_Bonus, selected_amenities, amenity_counts, selected_amenities, amenity_counts
 
 
 
 def amenity_select_main(total_FAR_bonus, selected_amenities, amenity_counts):
-    col1, col2 = st.columns([0.7, 0.3])
-    with col1:
-        # Build a table showing selected amenities with their quantities
-        selected_rows = []
-        for name in selected_amenities:
-            row = d.amenity_menu[d.amenity_menu["Amenity"] == name].iloc[0].copy()
-            count = amenity_counts[name]
-            # Multiply numeric columns by count
-            for col_name in row.index:
-                if col_name not in ["Amenity", "Land Use"] and pd.api.types.is_numeric_dtype(type(row[col_name])):
-                    row[col_name] = row[col_name] * count
-            selected_rows.append(row)
+    # Build a table showing selected amenities with their quantities
+    selected_rows = []
+    for name in selected_amenities:
+        row = d.amenity_menu[d.amenity_menu["Amenity"] == name].iloc[0].copy()
+        count = amenity_counts[name]
+        # Multiply numeric columns by count
+        for col_name in row.index:
+            if col_name not in ["Amenity", "Land Use"] and pd.api.types.is_numeric_dtype(type(row[col_name])):
+                row[col_name] = row[col_name] * count
+        selected_rows.append(row)
 
-        if selected_rows:
-            selected_menu = pd.DataFrame(selected_rows)
-            # Add a total row: "Total" in Amenity, sum numeric columns, N/A for non-numeric
-            total_row = {}
-            for col in selected_menu.columns:
-                if col == "Amenity":
-                    total_row[col] = "Total"
-                elif pd.api.types.is_numeric_dtype(selected_menu[col]):
-                    total_row[col] = selected_menu[col].sum()
-                else:
-                    total_row[col] = "N/A"
-            selected_menu_with_total = pd.concat([selected_menu, pd.DataFrame([total_row])], ignore_index=True)
-            st.write(selected_menu_with_total)
-        else:
-            st.write("No amenities selected.")
+    if selected_rows:
+        selected_menu = pd.DataFrame(selected_rows)
+        # Add a total row: "Total" in Amenity, sum numeric columns, N/A for non-numeric
+        total_row = {}
+        for col in selected_menu.columns:
+            if col == "Amenity":
+                total_row[col] = "Total"
+            elif pd.api.types.is_numeric_dtype(selected_menu[col]):
+                total_row[col] = selected_menu[col].sum()
+            else:
+                total_row[col] = "N/A"
+        selected_menu_with_total = pd.concat([selected_menu, pd.DataFrame([total_row])], ignore_index=True)
+        st.write(selected_menu_with_total)
+    else:
+        st.write("No amenities selected.")
 
-        st.write("**Total FAR Bonus:**", round(total_FAR_bonus, 2))
+    st.write("**Round FAR Bonus:**", round(total_FAR_bonus, 2))
 
-    with col2: #NOTE: keep working here to see if I can create a visual representation of pro forma inputs? for example a rectangle that gets taller if more IRR is permitted and and thinner if setback items are added
-        st.write("column 2")
 
 def proforma_inputs_updater(total_FAR_bonus, selected_amenities, amenity_counts):
 
@@ -479,3 +527,72 @@ def second_developer_cycle():
     
     marginal_df = pd.DataFrame(rows)
     st.write(marginal_df)
+
+
+def game_summary():
+    """Page 8: display a summary of both rounds — amenities, FAR bonuses, NPV and IRR."""
+    st.title("Game Summary")
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _fmt_pct(val):
+        try:
+            return f"{val * 100:.2f}%"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    def _fmt_dollar(val):
+        try:
+            return f"${val:,.0f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    def _amenity_table(counts_dict):
+        """Return a DataFrame showing only amenities with count > 0."""
+        rows = [
+            {"Amenity": name, "Count": count}
+            for name, count in counts_dict.items()
+            if count > 0
+        ]
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Amenity", "Count"])
+
+    # ── retrieve saved data ───────────────────────────────────────────────────
+    far_r1 = st.session_state.get("total_FAR_Bonus_round1", None)
+    far_r2 = st.session_state.get("total_FAR_Bonus_round2", None)
+    irr_r1 = st.session_state.get("irr_round1", None)
+    npv_r1 = st.session_state.get("npv_round1", None)
+    irr_r2 = st.session_state.get("irr_round2", None)
+    npv_r2 = st.session_state.get("npv_round2", None)
+    counts_r1 = st.session_state.get("amenity_counts_round1", {})
+    counts_r2_delta = st.session_state.get("amenity_counts_round2_delta", {})
+
+    col1, col2 = st.columns(2)
+
+    # ── Round 1 ───────────────────────────────────────────────────────────────
+    with col1:
+        st.subheader("Round 1")
+
+        st.markdown("**Amenities selected**")
+        tbl1 = _amenity_table(counts_r1)
+        if not tbl1.empty:
+            st.dataframe(tbl1, use_container_width=True, hide_index=True)
+        else:
+            st.write("No amenities selected.")
+
+        st.metric("Total FAR Bonus", round(far_r1, 2) if far_r1 is not None else "N/A")
+        st.metric("IRR", _fmt_pct(irr_r1))
+        st.metric("NPV", _fmt_dollar(npv_r1))
+
+    # ── Round 2 ───────────────────────────────────────────────────────────────
+    with col2:
+        st.subheader("Round 2")
+
+        st.markdown("**New amenities added this round**")
+        tbl2 = _amenity_table(counts_r2_delta)
+        if not tbl2.empty:
+            st.dataframe(tbl2, use_container_width=True, hide_index=True)
+        else:
+            st.write("No new amenities added.")
+
+        st.metric("Round FAR Bonus", round(far_r2, 2) if far_r2 is not None else "N/A")
+        st.metric("IRR", _fmt_pct(irr_r2))
+        st.metric("NPV", _fmt_dollar(npv_r2))
