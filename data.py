@@ -4,7 +4,7 @@ from math import floor
 
 from proforma_reforms import MiscItems
 
-FAR_Booster = 1.5 # * 1.5
+FAR_Booster = 2 # * 1.5
 
 input_factors = { #Item sizing
     "Apt_size" : 700,
@@ -141,6 +141,9 @@ pv_results = pd.DataFrame({
     "Amenity": ["Pocket Park", "Ramen Shop", "City Science Lab", "Subsidized Housing", "Annual Festival", "Flood Mitigation"],
     "Votes": [1.607717, 2.146182, 1.542971, 1.750715, 1.512509, 1.439906]
 })
+# Normalize so lowest vote = 1, others scaled proportionally
+pv_results["Votes"] = pv_results["Votes"] / pv_results["Votes"].min()
+
 
 
 #amenity menu items
