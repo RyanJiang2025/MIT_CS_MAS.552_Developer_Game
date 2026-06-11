@@ -7,17 +7,17 @@ import numpy_financial as nf
 from proforma_reforms import Reform_effects as Reforms
 
 def initialize_game():
-    st.title("Week 3 Developer Game")
-    st.write("Welcome to week 3 of MAS.552!")
-    st.write("This week, you will be playing as a developer, simulating the second stage of dynamic zoning.")
-    st.write("Based on your votes last week with Propagational Voting, we have created a menu of amenity options that you can fund in your neighborhood, in exchange for more FAR (Floor Area Ratio) for your buildings.")
-    st.write("You will be able to select up to 3 amenities to fund, and the more you fund, the more FAR you can build, and the more profit you can make.")
+    st.title("Dynamic Zoning Game")
+    st.write("Welcome to the Dynamic Zoning game!")
+    st.write("You will be playing as a developer, simulating the second stage of dynamic zoning.")
+    st.write("Based on your votes with Propagational Voting, we have created a menu of amenity options that you can fund in your neighborhood, in exchange for more FAR (Floor Area Ratio) for your buildings.")
+    st.write("You will be able to select several to fund, and the more you fund, the more FAR you can build, and the more profit you can make.")
     st.write("Take into consideration both profit and what kind of developer you want to be, and the neighborhood you want to build.")
     st.write("Real estate development is both an art and a science, and you will need to balance both to succeed.")
     st.write("Good luck!")
 
 def prev_week_results():
-    st.write("Last week, here's how you voted:")
+    st.write("Previously, here's how you voted:")
     st.write(d.pv_results)
     d.amenity_menu = FAR_bonus_menu()
     st.write("This generated the following menu for the developers to choose from:")
@@ -51,6 +51,7 @@ def FAR_bonus(amenity_name, priority_weights):
 def FAR_bonus_menu():
     # Create a copy to avoid modifying the original during iteration
     amenity_menu_copy = d.amenity_menu.copy()
+    amenity_menu_copy["FAR Bonus"] = amenity_menu_copy["FAR Bonus"].astype(float)
     
     for idx, amenity_name in enumerate(d.amenity_menu["Amenity"]):
         priority_weight = d.pv_results[d.pv_results["Amenity"] == amenity_name]["Votes"].iloc[0]
